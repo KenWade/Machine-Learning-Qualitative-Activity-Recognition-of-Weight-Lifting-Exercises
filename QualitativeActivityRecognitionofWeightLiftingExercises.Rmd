@@ -1,0 +1,176 @@
+---
+title: "Practical Machine Learning: Qualitative Activity Recognition of Weight Lifting Exercises"
+author: "Ken Wade"
+date: "June 10, 2016"
+output: html_document
+geometry: margin=1.5cm
+documentclass: article
+classoption: a4paper
+---
+
+# Executive Summary
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+### Course Project Prediction Quiz Portion
+
+Apply your machine learning algorithm to the 20 test cases available in the test data above and submit your predictions in appropriate format to the Course Project Prediction Quiz for automated grading.
+
+### The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+### The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+### Data Source Citation
+
+WLE Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13). Stuttgart, Germany: ACM SIGCHI, 2013.
+
+# Exploratory Data Analysis
+
+The first thing to do is to setup the program and read the data.  If the Weight Lifting Exercises data is not loaded onto the computer already it is setup and downloaded.
+
+### Set up and Read Data
+```{r echo=TRUE, warning=FALSE, out.width = '1250px', dpi=200}
+library(caret)
+library(corrplot)
+library(tree)
+library(adabag)
+set.seed(4242)
+setwd("C:/Users/Ken/Documents/Ken/Continuing Education/Johns Hopkins School of Public Health - Data Science 8 - Practical Machine Learning")
+
+data.FolderName        <- "data"
+Training.dataURL       <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+Training.dataFileName  <-                                                     "pml-training.csv"
+Testing.dataURL        <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+Testing.dataFileName   <-                                                     "pml-testing.csv"
+
+# Create the data folder
+if(!file.exists(data.FolderName)) {
+  dir.create(data.FolderName)
+  print(paste("Created ", data.FolderName, " folder.", sep=""))
+}
+
+if (!file.exists(paste("./", data.FolderName, "/", Training.dataFileName, sep=""))) {
+  print(paste("Downloading Training Data at: ", Training.dataURL, "...", sep=""))
+  download.file(Training.dataURL, destfile = paste("./", data.FolderName, "/",Training.dataFileName, sep=""), method="auto")
+  print(paste("Downloading ", Training.dataURL, " completed.", sep=""))
+}
+
+if (!file.exists(paste("./", data.FolderName, "/", Testing.dataFileName, sep=""))) {
+  print(paste("Downloading Testing Data at: ", Testing.dataURL, "...", sep=""))
+  download.file(Testing.dataURL, destfile = paste("./", data.FolderName, "/",Testing.dataFileName, sep=""), method="auto")
+  print(paste("Downloading ", Testing.dataURL, " completed.", sep=""))
+}
+
+# Read the data
+Orig.TrainingData <- read.csv(paste("./", data.FolderName, "/", Training.dataFileName, sep=""), header=TRUE)
+Orig.TestingData <- read.csv(paste("./", data.FolderName, "/", Testing.dataFileName, sep=""), header=TRUE)
+
+dim(Orig.TrainingData)
+dim(Orig.TestingData)
+```
+# Clean the Training Data
+
+There are many columns in the Weight Lifting Exercises data that contain no usable values.  The first thing to do is to clean out these columns.  The columns to remove are the identification columns, the columns with no data, the columns with unvarying data, and the columns that are highly correlated with another column.  The final action is to make all the columns in the testing data match the training data.
+
+```{r echo=TRUE, warning=FALSE, out.width = '1250px', dpi=200}
+# Get rid of identification columns
+WorkingData <- subset(Orig.TrainingData, select=
+     -c(X, user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, new_window, num_window))
+dim(WorkingData)
+
+# Get rid of NA columns
+WorkingData <- WorkingData[, sapply(WorkingData, function(x) !(any(is.na(x))))]
+dim(WorkingData)
+
+# Get rid of Uninteresting columns
+NZV <- nearZeroVar(WorkingData)
+if (length(NZV) > 0) WorkingData <- WorkingData[, -NZV]
+dim(WorkingData)
+
+# Get rid of highly correlated columns
+corMatrix <- cor(WorkingData[, -match("classe", names(WorkingData))])
+corrplot(corMatrix, order = "FPC", method = "color", type = "lower",
+         tl.cex = 0.5, tl.col = "black", title = "Correlation Matrix")
+hiCor <- findCorrelation(corMatrix, cutoff=0.80)
+WorkingData <- WorkingData[, -hiCor]
+dim(WorkingData)
+
+# Select only the same columns for the test data
+names(Orig.TestingData)[names(Orig.TestingData) == "problem_id"] <- "classe"
+Orig.TestingData <- subset(Orig.TestingData, select=names(WorkingData))
+```
+
+In the graph above the degree of correlation between the original data values are shown.  Of interest are the lighter correlations showing that the two variables in question are less correlated, that is to say, the correlation coefficient is closer to zero.
+
+This data cleaning has resulted in the reduction in the Weight Lifting Exercises data variables from `r dim(Orig.TrainingData)[2]` variables down to `r dim(WorkingData)[2]` variables.
+
+# Modeling and Detailed Analysis
+
+It is now possible to develop the actual model for use in this project.  The original plan was to use a Random Forest Model using all the columns of data available in the Weight Lifting Exercises data.  However, this model never ran to completion.  Therefore, three much simpler models were used and compared:
+
+* Tree Model
+* rpart Model
+* Reduced Variable rpart Model via boosting
+
+For this section of analysis, the original testing data is divided into a training data set and a testing data set.  The testing data set is used to evaluate the performance of each of the models in an out-of-sample context.  The original testing data is divided up 80% for building the model and 20% for its evaluation.
+
+```{r echo=TRUE, warning=FALSE, out.width = '1250px', dpi=200}
+# Partition Reduced Training Data (WorkingData) into Testing and Training Data
+inTrain <- createDataPartition(y=WorkingData$classe, p=0.8, list=FALSE)
+Training <- WorkingData[inTrain, ]
+Testing <- WorkingData[-inTrain, ]
+dim(Training)
+dim(Testing)
+
+# Train Tree Model
+modFit.Tree=tree(classe~.,data=Training)
+# Train rpart Model
+modFit.rpart = rpart(classe~., data=Training)
+
+#Radically Reduced rpart Model
+Boost <- boosting(classe~., data = Training, mfinal = 10)
+Boost.names <- c(names(head(sort(-Boost$importance), 10)), "classe")
+Boost.Training <- subset(Training, select=Boost.names)
+modFit.Boost <- rpart(classe~., data=Boost.Training)
+```
+
+# Predict the results on the Testing Data to make an estimate of out of sample error for each of the models
+
+Using the testing data portion of the original training data the predictions of each of the model are calculated.
+```{r echo=TRUE, warning=FALSE, out.width = '1250px', dpi=200}
+# Tree: Predict the results on the Testing Data to make an estimate of out of sample error
+pred.Tree <- predict(modFit.Tree, newdata=Testing, type="class")
+conMat.Tree <- confusionMatrix(pred.Tree, Testing$classe)
+conMat.Tree
+# rpart: Predict the results on the Testing Data to make an estimate of out of sample error
+pred.rpart <- predict(modFit.rpart, newdata=Testing, type="class")
+conMat.rpart <- confusionMatrix(pred.rpart, Testing$classe)
+conMat.rpart
+#  Reduced rpart: Predict the results on the Testing Data to make an estimate of out of sample error
+pred.Boost <- predict(modFit.Boost, newdata=Testing, type="class")
+conMat.Boost <- confusionMatrix(pred.Boost, Testing$classe)
+conMat.Boost
+```
+
+# Conclusion
+Large, advanced models take considerable time to process and, therefore, are beyond the capacity of computing resources here.  Of the simpler models tested the "boosted rpart" performed best with an overall accuracy of `r conMat.Boost$overall['Accuracy']`. This equates to an out of sample error rate of `r (1-conMat.Boost$overall['Accuracy'])*100`%. This is not as high an accuracy as hoped for but the best that computing resources allow.
+```{r echo=TRUE, warning=FALSE, out.width = '1250px', dpi=200}
+```
+
+# 20 Answers for Quiz
+The following are the answers for the Course Quiz test data:
+```{r echo=TRUE, warning=TRUE}
+predQuiz.Tree <- predict(modFit.Tree, newdata= Orig.TestingData, type="class")
+predQuiz.Tree
+
+predQuiz.rpart <- predict(modFit.rpart, newdata= Orig.TestingData, type="class")
+predQuiz.rpart
+
+predQuiz.Boost <- predict(modFit.Boost, newdata= Orig.TestingData, type="class")
+predQuiz.Boost
+```
+
